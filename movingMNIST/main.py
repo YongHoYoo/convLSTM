@@ -61,7 +61,7 @@ class ConvLSTMCell(nn.Module):
                 weight.new(bsz, self.chid, height, width).zero_())#.requires_grad_()) 
 
 class ConvEncoder(nn.Module): 
-    def __init__(self, cinp, chids, ksz, dropout=0.2, h_dropout=0.0):
+    def __init__(self, cinp, chids, ksz, dropout=0.2, h_dropout=0.0, gate=False):
         super(ConvEncoder, self).__init__() 
 
         self.cinps = [cinp] + chids # 1 128 64 64
@@ -76,6 +76,13 @@ class ConvEncoder(nn.Module):
         self.layer_stack = nn.ModuleList([
             ConvLSTMCell(self.cinps[i], self.chids[i], ksz) 
             for i in range(self.nlayers)]) 
+
+        if gate is True:
+            self.attn = nn.ModuleList([ 
+                nn.Conv2d(self.chids[i], 1, ksz, 1, pad, bias=True) 
+                for i in range(self.nlayers)])
+        else: 
+            self.attn = None 
 
         self.top = nn.Conv2d(chids[-1], cinp, ksz, 1, pad, bias=True) 
 
@@ -103,6 +110,7 @@ class ConvEncoder(nn.Module):
         else:
             self.h_mask = None 
 
+        attn_masks = [] 
         for step in range(steps): 
             next_hidden = [] 
             
@@ -112,6 +120,7 @@ class ConvEncoder(nn.Module):
             if self.mask is not None: # training & dropout 
                 x = x*self.mask[0] 
             
+            attn_mask = [] 
             for i, layer in enumerate(self.layer_stack): 
                 
                 h,c = hidden[i]
@@ -120,18 +129,30 @@ class ConvEncoder(nn.Module):
                     h = h*self.h_mask[i]         
 
                 x,c = layer(x, (h,c)) 
+                
+                if self.attn is not None and step<steps-1: # don't apply the attn to last hidden state 
+                    attn = self.attn[i](x) 
+                    
+                    attn_mask.append(attn) 
+                    a = nn.Sigmoid()(attn) 
+                    x = x*a.expand_as(x) 
+
                 next_hidden.append((x,c)) 
                 
                 if self.mask is not None: 
                     x = x*self.mask[i+1]
             
+            attn_masks.append(attn_mask) 
             hidden = next_hidden
 
-        return hidden 
+        if self.attn is None: 
+            attn_masks = None
+
+        return hidden, attn_masks
 
 
 class ConvDecoder(nn.Module):
-    def __init__(self, cinp, chids, ksz, reverse=False, dropout=0.2, h_dropout=0.0): 
+    def __init__(self, cinp, chids, ksz, reverse=False, dropout=0.2, h_dropout=0.0, gate=False): 
      
         super(ConvDecoder, self).__init__() 
    
@@ -149,9 +170,16 @@ class ConvDecoder(nn.Module):
             ConvLSTMCell(self.cinps[i], self.chids[i], ksz) 
             for i in range(self.nlayers)]) 
 
+        if gate is True:
+            self.attn = nn.ModuleList([ 
+                nn.Conv2d(self.chids[i], 1, ksz, 1, pad, bias=True) 
+                for i in range(self.nlayers)])
+        else: 
+            self.attn = None 
+
         self.top = nn.Conv2d(chids[-1], cinp, ksz, 1, pad, bias=True) 
 
-    def forward(self, hidden, target): 
+    def forward(self, hidden, target, attn_masks=None): 
 
         if target is None: # free running 
             pass
@@ -201,6 +229,15 @@ class ConvDecoder(nn.Module):
                     h =h*self.h_mask[i] 
         
                 x,c = layer(x, (h,c)) 
+
+                if self.attn is not None: 
+                    if attn_masks is not None: 
+                        a = attn_masks[step-1][i]
+                        x = x*a.expand_as(x) 
+                    else: 
+                        a = nn.Sigmoid()(self.attn[i](x)) 
+                        x = x*a.expand_as(x) 
+
                 next_hidden.append((x,c)) 
                 
                 if self.mask is not None: 
@@ -218,22 +255,30 @@ class ConvDecoder(nn.Module):
     
 
 class ConvEncDec(nn.Module): 
-    def __init__(self, cinp, chids, ksz, dropout=0.2, h_dropout=0.0): 
+    def __init__(self, cinp, chids, ksz, dropout=0.2, h_dropout=0.0, gate=False): 
         super(ConvEncDec, self).__init__() 
 
         self.dropout = dropout 
         self.h_dropout = h_dropout
 
-        self.convEncoder = ConvEncoder(cinp, chids, ksz, dropout=dropout, h_dropout=h_dropout) 
-        self.convReconstructor= ConvDecoder(cinp, chids, ksz, reverse=True, dropout=dropout, h_dropout=h_dropout) 
-        self.convPredictor = ConvDecoder(cinp, chids, ksz, dropout=dropout, h_dropout=h_dropout) 
+        self.convEncoder = ConvEncoder(cinp, chids, ksz, dropout=dropout, h_dropout=h_dropout, gate=gate) 
+        self.convReconstructor= ConvDecoder(cinp, chids, ksz, reverse=True, dropout=dropout, h_dropout=h_dropout, gate=gate) 
+        self.convPredictor = ConvDecoder(cinp, chids, ksz, dropout=dropout, h_dropout=h_dropout, gate=gate) 
+        
+        # tying attention network
+        if gate is True: 
+            for i in range(len(chids)): 
+                self.convEncoder.attn[i].weight = self.convPredictor.attn[i].weight 
+                self.convEncoder.attn[i].bias = self.convPredictor.attn[i].bias
 
-    def forward(self, input, target):
+                self.convEncoder.layer_stack[i].i2h.weight = self.convPredictor.layer_stack[i].i2h.weight 
+                self.convEncoder.layer_stack[i].i2h.bias = self.convPredictor.layer_stack[i].i2h.bias
+                self.convEncoder.layer_stack[i].h2h.weight = self.convPredictor.layer_stack[i].h2h.weight 
 
-        # make dropout mask. !
+    def forward(self, input, target, hidden=None):
 
-        hidden = self.convEncoder(input)
-        reconstructed = self.convReconstructor(hidden, input) 
+        hidden, attns = self.convEncoder(input, hidden)
+        reconstructed = self.convReconstructor(hidden, input, attns) 
         predicted = self.convPredictor(hidden, target) 
         output = torch.cat([reconstructed, predicted], 1) 
 
@@ -252,6 +297,7 @@ if __name__=='__main__':
     parser.add_argument('--dropout', type=float, default=0.2) 
     parser.add_argument('--h_dropout', type=float, default=0.0) 
     parser.add_argument('--save_folder', type=str, default='image') 
+    parser.add_argument('--gate', action='store_true') 
 
     args = parser.parse_args() 
 
@@ -266,10 +312,10 @@ if __name__=='__main__':
     trainset = dataset[:,:100,:,:].unsqueeze(2)  # 20 by 7000 by 1 by 64 by 64
     validset  = dataset[:,100:200,:,:].unsqueeze(2)  # 20 by 3000 by 1 by 64 by 64
  
-    model = ConvEncDec(1, args.nhid, args.ksz, dropout=args.dropout, h_dropout=args.h_dropout).to('cuda')    
+    model = ConvEncDec(1, args.nhid, args.ksz, dropout=args.dropout, h_dropout=args.h_dropout, gate=args.gate).to('cuda')    
 
     criterion = nn.MSELoss() 
-    optimizer = optim.Adam(model.parameters(), lr=args.lr) 
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-6) 
 
     trainset = movingMNIST(trainset) 
     validset = movingMNIST(validset) 
@@ -315,8 +361,8 @@ if __name__=='__main__':
 
             loss = criterion(outputs, targets) 
             valid_loss.append(loss.item()) 
-            if i%2==0: 
-                print('%d/%d:%7.5f'%(i,100/5,sum(valid_loss)/len(valid_loss)))
+            if i%2==1: 
+                print('%s %d/%d:%7.5f'%(args.save_folder, i,100/5,sum(valid_loss)/len(valid_loss)))
 
             if i==0: # 5 6 1 64 64
                 disp_outputs = outputs[0,:,0].detach().to('cpu') # 6 64 64 

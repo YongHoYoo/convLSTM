@@ -232,8 +232,6 @@ class ConvEncDec(nn.Module):
 
     def forward(self, input, target, hidden=None):
 
-        # make dropout mask. !
-
         hidden = self.convEncoder(input, hidden)
         reconstructed = self.convReconstructor(hidden, input) 
         predicted = self.convPredictor(hidden, target) 
