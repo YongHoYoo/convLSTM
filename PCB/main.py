@@ -248,19 +248,23 @@ if __name__=='__main__':
 
     parser.add_argument('--bsz', type=int, default=5) 
     parser.add_argument('--epochs', type=int, default=100) 
-    parser.add_argument('--lr', type=float, default=1e-4) 
+    parser.add_argument('--lr', type=float, default=1e-3) 
     parser.add_argument('--ksz', type=int, default=5) 
     parser.add_argument('--nhid', type=list, default=[128,64,64]) 
     parser.add_argument('--dropout', type=float, default=0.1) 
     parser.add_argument('--h_dropout', type=float, default=0.1) 
-    parser.add_argument('--save_folder', type=str, default='image') 
+    parser.add_argument('--train_folder', type=str, default='train') 
+    parser.add_argument('--valid_folder', type=str, default='valid') 
 
     args = parser.parse_args() 
 
     # make save_folder 
-    save_folder = Path(args.save_folder) 
-    save_folder.mkdir(parents=True, exist_ok=True)    
+    train_folder = Path(args.train_folder) 
+    train_folder.mkdir(parents=True, exist_ok=True)    
  
+    valid_folder = Path(args.valid_folder) 
+    valid_folder.mkdir(parents=True, exist_ok=True)    
+
     image = pickle.load(open('../../pcb_image.pkl', 'rb')) 
     image = torch.stack(image.chunk(10,0),0) 
 
@@ -293,7 +297,7 @@ if __name__=='__main__':
     model = ConvEncDec(1, args.nhid, args.ksz, dropout=args.dropout, h_dropout=args.h_dropout).to('cuda')    
 
     criterion = nn.MSELoss() 
-    optimizer = optim.Adam(model.parameters(), lr=args.lr) 
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4) 
 
     all_valid_loss = [] 
 
@@ -315,9 +319,9 @@ if __name__=='__main__':
 
             outputs, hidden = model(input, target, hidden) 
             
-#            outputs = masks*outputs + (1-masks)*targets 
+#            outputs = masks*outputs + (1-masks)*torch.cat([input,target],1)  
 
-            loss = criterion(outputs*masks, targets*masks)  
+            loss = criterion(outputs, targets)  
             loss.backward() 
             optimizer.step() 
 
@@ -330,8 +334,18 @@ if __name__=='__main__':
 
             hidden = new_hidden 
 
-    
-        optimizer.param_groups[0]['lr']*=0.9 
+            if i==0: # 5 6 1 64 64
+                disp_outputs = outputs[0,:,0].detach().to('cpu') # 6 64 64 
+                disp_outputs = torch.stack(disp_outputs.chunk(disp_outputs.size(0),0),2).view(64,-1)
+
+                disp_targets = targets[0,:,0].detach().to('cpu') 
+                disp_targets = torch.stack(disp_targets.chunk(disp_targets.size(0),0),2).view(64,-1) 
+                save_filename = str(train_folder.joinpath('image%d.png'%epoch)) 
+                torchvision.utils.save_image(torch.cat([disp_targets, disp_outputs], 0), save_filename) 
+
+
+        if epoch<50: 
+            optimizer.param_groups[0]['lr']*=0.9
 
         model.eval() 
         
@@ -343,9 +357,9 @@ if __name__=='__main__':
             masks = torch.cat([imask, tmask], 1) 
             outputs, hidden = model(input, target, hidden) 
 
-#            outputs = masks*outputs + (1-masks)*targets 
+ #           outputs = masks*outputs + (1-masks)*torch.cat([input,target],1) 
           
-            loss = criterion(outputs*masks, targets*masks) 
+            loss = criterion(outputs, targets) 
             valid_loss.append(loss.item()) 
 
             print('%d/%d:%7.5f'%(i,100/5,sum(valid_loss)/len(valid_loss)))
@@ -356,7 +370,7 @@ if __name__=='__main__':
 
                 disp_targets = targets[0,:,0].detach().to('cpu') 
                 disp_targets = torch.stack(disp_targets.chunk(disp_targets.size(0),0),2).view(64,-1) 
-                save_filename = str(save_folder.joinpath('image%d.png'%epoch)) 
+                save_filename = str(valid_folder.joinpath('image%d.png'%epoch)) 
                 torchvision.utils.save_image(torch.cat([disp_targets, disp_outputs], 0), save_filename) 
 
 
