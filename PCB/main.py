@@ -297,7 +297,7 @@ if __name__=='__main__':
     model = ConvEncDec(1, args.nhid, args.ksz, dropout=args.dropout, h_dropout=args.h_dropout).to('cuda')    
 
     criterion = nn.MSELoss() 
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4) 
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-7) 
 
     all_valid_loss = [] 
 
@@ -318,8 +318,6 @@ if __name__=='__main__':
             masks = torch.cat([imask, tmask], 1)    
 
             outputs, hidden = model(input, target, hidden) 
-            
-#            outputs = masks*outputs + (1-masks)*torch.cat([input,target],1)  
 
             loss = criterion(outputs, targets)  
             loss.backward() 
@@ -344,8 +342,7 @@ if __name__=='__main__':
                 torchvision.utils.save_image(torch.cat([disp_targets, disp_outputs], 0), save_filename) 
 
 
-        if epoch<50: 
-            optimizer.param_groups[0]['lr']*=0.9
+        optimizer.param_groups[0]['lr']*=0.9
 
         model.eval() 
         
