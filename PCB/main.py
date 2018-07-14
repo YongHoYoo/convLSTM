@@ -13,12 +13,15 @@ from torch.nn._functions.thnn import rnnFusedPointwise as fusedBackend
 import numpy as np
  
 class PCB(Dataset):
-    def __init__(self, data):  # data: 9 by 20 by 1 by 64 by 64 
+    def __init__(self, data, mask):  # data: 9 by 20 by 1 by 64 by 64 
         self.input = data[:, :10] 
         self.output = data[:, 10:20] 
 
+        self.imask = mask[:, :10] 
+        self.omask = mask[:, 10:20] 
+
     def __getitem__(self, idx): 
-        return self.input[idx].to('cuda'), self.output[idx].to('cuda') 
+        return self.input[idx].to('cuda'), self.output[idx].to('cuda'), self.imask[idx].to('cuda'), self.imask[idx].to('cuda') 
 
     def __len__(self):
         return self.input.size(0) 
@@ -245,7 +248,7 @@ if __name__=='__main__':
 
     parser.add_argument('--bsz', type=int, default=5) 
     parser.add_argument('--epochs', type=int, default=100) 
-    parser.add_argument('--lr', type=float, default=1e-3) 
+    parser.add_argument('--lr', type=float, default=1e-4) 
     parser.add_argument('--ksz', type=int, default=5) 
     parser.add_argument('--nhid', type=list, default=[128,64,64]) 
     parser.add_argument('--dropout', type=float, default=0.1) 
@@ -260,17 +263,29 @@ if __name__=='__main__':
  
     image = pickle.load(open('../../pcb_image.pkl', 'rb')) 
     image = torch.stack(image.chunk(10,0),0) 
+
+    bmask = pickle.load(open('../../pcb_mask.pkl', 'rb')) 
+    bmask = torch.stack(bmask.chunk(10,0),0) 
     
     dataset = []
+    bmasks = [] 
+
     for i in range(len(image)-1): 
         dataset.append(torch.cat([image[i], image[i+1]], 0)) #20 1 64 64
+        bmasks.append(torch.cat([bmask[i], bmask[i+1]], 0)) 
+
     dataset = torch.stack(dataset, 0) 
+    bmasks = torch.stack(bmasks, 0).unsqueeze(2) 
+
 
     trainset = dataset[:5] 
+    trainmask = bmasks[:5] 
+
     validset = dataset[5:] 
+    validmask = bmasks[5:] 
     
-    trainset = PCB(trainset)
-    validset = PCB(validset) 
+    trainset = PCB(trainset, trainmask)
+    validset = PCB(validset, validmask) 
 
     train_loader = DataLoader(dataset=trainset, batch_size=1, shuffle=False) 
     valid_loader = DataLoader(dataset=validset, batch_size=1, shuffle=False) 
@@ -293,10 +308,15 @@ if __name__=='__main__':
 
             optimizer.zero_grad() 
 
-            input, target = data 
+            input, target, imask, tmask = data 
                        
             targets = torch.cat([input, target], 1) 
+            masks = torch.cat([imask, tmask], 1)    
+
             outputs, hidden = model(input, target, hidden) 
+            
+            outputs = masks*outputs + (1-masks)*targets 
+
             loss = criterion(outputs, targets)  
             loss.backward() 
             optimizer.step() 
@@ -317,11 +337,14 @@ if __name__=='__main__':
         
         valid_loss = [] 
         for i, data in enumerate(valid_loader): 
-            input, target = data 
+            input, target, imask, tmask = data 
             
             targets = torch.cat([input, target], 1) 
+            masks = torch.cat([imask, tmask], 1) 
             outputs, hidden = model(input, target, hidden) 
-            
+
+            outputs = masks*outputs + (1-masks)*targets 
+          
             loss = criterion(outputs, targets) 
             valid_loss.append(loss.item()) 
 
