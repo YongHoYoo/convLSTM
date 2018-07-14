@@ -315,9 +315,9 @@ if __name__=='__main__':
 
             outputs, hidden = model(input, target, hidden) 
             
-            outputs = masks*outputs + (1-masks)*targets 
+#            outputs = masks*outputs + (1-masks)*targets 
 
-            loss = criterion(outputs, targets)  
+            loss = criterion(outputs*masks, targets*masks)  
             loss.backward() 
             optimizer.step() 
 
@@ -343,9 +343,9 @@ if __name__=='__main__':
             masks = torch.cat([imask, tmask], 1) 
             outputs, hidden = model(input, target, hidden) 
 
-            outputs = masks*outputs + (1-masks)*targets 
+#            outputs = masks*outputs + (1-masks)*targets 
           
-            loss = criterion(outputs, targets) 
+            loss = criterion(outputs*masks, targets*masks) 
             valid_loss.append(loss.item()) 
 
             print('%d/%d:%7.5f'%(i,100/5,sum(valid_loss)/len(valid_loss)))
