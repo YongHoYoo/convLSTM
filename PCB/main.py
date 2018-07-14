@@ -247,9 +247,9 @@ if __name__=='__main__':
     parser.add_argument('--epochs', type=int, default=100) 
     parser.add_argument('--lr', type=float, default=1e-4) 
     parser.add_argument('--ksz', type=int, default=5) 
-    parser.add_argument('--nhid', type=list, default=[64,64]) 
-    parser.add_argument('--dropout', type=float, default=0.3) 
-    parser.add_argument('--h_dropout', type=float, default=0.3) 
+    parser.add_argument('--nhid', type=list, default=[128,64,64]) 
+    parser.add_argument('--dropout', type=float, default=0.1) 
+    parser.add_argument('--h_dropout', type=float, default=0.1) 
     parser.add_argument('--save_folder', type=str, default='image') 
 
     args = parser.parse_args() 
@@ -290,8 +290,11 @@ if __name__=='__main__':
         print('----------------') 
         
         for i, data in enumerate(train_loader): 
+
+            optimizer.zero_grad() 
+
             input, target = data 
-            
+                       
             targets = torch.cat([input, target], 1) 
             outputs, hidden = model(input, target, hidden) 
             loss = criterion(outputs, targets)  
