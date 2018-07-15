@@ -105,7 +105,9 @@ if __name__=='__main__':
 
             outputs, hidden = model(input, target, hidden) 
 
-            loss = criterion(outputs, targets)  
+            m_outputs = outputs*masks
+            m_targets = targets*masks
+            loss = criterion(m_outputs, m_targets) 
             loss.backward() 
             optimizer.step() 
 
@@ -119,10 +121,10 @@ if __name__=='__main__':
             hidden = new_hidden 
 
             if i==0: # 5 6 1 64 64
-                disp_outputs = outputs[0,:,0].detach().to('cpu') # 6 64 64 
+                disp_outputs = m_outputs[0,:,0].detach().to('cpu') # 6 64 64 
                 disp_outputs = torch.stack(disp_outputs.chunk(disp_outputs.size(0),0),2).view(64,-1)
 
-                disp_targets = targets[0,:,0].detach().to('cpu') 
+                disp_targets = m_targets[0,:,0].detach().to('cpu') 
                 disp_targets = torch.stack(disp_targets.chunk(disp_targets.size(0),0),2).view(64,-1) 
                 save_filename = str(train_folder.joinpath('image%d.png'%epoch)) 
                 torchvision.utils.save_image(torch.cat([disp_targets, disp_outputs], 0), save_filename) 
@@ -140,19 +142,20 @@ if __name__=='__main__':
             masks = torch.cat([imask, tmask], 1) 
             outputs, hidden = model(input, target, hidden) 
 
- #           outputs = masks*outputs + (1-masks)*torch.cat([input,target],1) 
-          
-            loss = criterion(outputs, targets) 
+            m_outputs = outputs*masks
+            m_targets = targets*masks
+            
+            loss = criterion(m_outputs, m_targets) 
             valid_loss.append(loss.item()) 
 
             if i==3: 
                 print('%s %d/%d:%7.5f'%(args.valid_folder, i,4,sum(valid_loss)/len(valid_loss)))
             
             if i==0: # 5 6 1 64 64
-                disp_outputs = outputs[0,:,0].detach().to('cpu') # 6 64 64 
+                disp_outputs = m_outputs[0,:,0].detach().to('cpu') # 6 64 64 
                 disp_outputs = torch.stack(disp_outputs.chunk(disp_outputs.size(0),0),2).view(64,-1)
 
-                disp_targets = targets[0,:,0].detach().to('cpu') 
+                disp_targets = m_targets[0,:,0].detach().to('cpu') 
                 disp_targets = torch.stack(disp_targets.chunk(disp_targets.size(0),0),2).view(64,-1) 
                 save_filename = str(valid_folder.joinpath('image%d.png'%epoch)) 
                 torchvision.utils.save_image(torch.cat([disp_targets, disp_outputs], 0), save_filename) 

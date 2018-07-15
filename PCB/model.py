@@ -110,6 +110,7 @@ class ConvEncoder(nn.Module):
                 x,c = layer(x, (h,c)) 
                 
                 if self.attn is not None and step<steps-1: # don't apply the attn to last hidden state 
+
                     attn = self.attn[i](x) 
                     
                     attn_mask.append(attn) 
@@ -153,6 +154,9 @@ class ConvDecoder(nn.Module):
             self.attn = nn.ModuleList([ 
                 nn.Conv2d(self.chids[i], 1, ksz, 1, pad, bias=True) 
                 for i in range(self.nlayers)])
+
+            # cinp, chid, ksz, stride, pad. 
+            
         else: 
             self.attn = None 
 
