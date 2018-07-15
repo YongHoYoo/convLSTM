@@ -64,7 +64,7 @@ if __name__=='__main__':
         dataset.append(torch.cat([image[i], image[i+1]], 0)) #20 1 64 64
         bmasks.append(torch.cat([bmask[i], bmask[i+1]], 0)) 
 
-    dataset = torch.stack(dataset, 0)
+    dataset = torch.stack(dataset, 0).unsqueeze(2) 
     bmasks = torch.stack(bmasks, 0).unsqueeze(2) 
 
 
@@ -83,7 +83,7 @@ if __name__=='__main__':
     model = ConvEncDec(1, args.nhid, args.ksz, dropout=args.dropout, h_dropout=args.h_dropout, gate=args.gate).to('cuda')    
 
     criterion = nn.MSELoss() 
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-7) 
+    optimizer = optim.RMSprop(model.parameters(), lr=args.lr, weight_decay=1e-7) 
 
     all_valid_loss = [] 
 
