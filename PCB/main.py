@@ -51,7 +51,7 @@ if __name__=='__main__':
     valid_folder = Path(args.valid_folder) 
     valid_folder.mkdir(parents=True, exist_ok=True)    
 
-    image = pickle.load(open('../../pcb_image.pkl', 'rb')) 
+    image = pickle.load(open('../../pcb_norm_image.pkl', 'rb')) 
     image = torch.stack(image.chunk(10,0),0) 
 
     bmask = pickle.load(open('../../pcb_mask.pkl', 'rb')) 
@@ -83,7 +83,7 @@ if __name__=='__main__':
     model = ConvEncDec(1, args.nhid, args.ksz, dropout=args.dropout, h_dropout=args.h_dropout, gate=args.gate).to('cuda')    
 
     criterion = nn.MSELoss() 
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-6) 
+    optimizer = optim.RMSprop(model.parameters(), lr=args.lr, weight_decay=1e-6) 
 
     all_valid_loss = [] 
 

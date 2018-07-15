@@ -246,9 +246,9 @@ class ConvEncDec(nn.Module):
         
         # tying attention network
         for i in range(len(chids)):     
-#            self.convEncoder.layer_stack[i].i2h.weight = self.convPredictor.layer_stack[i].i2h.weight 
-#            self.convEncoder.layer_stack[i].i2h.bias = self.convPredictor.layer_stack[i].i2h.bias
-#            self.convEncoder.layer_stack[i].h2h.weight = self.convPredictor.layer_stack[i].h2h.weight 
+            self.convEncoder.layer_stack[i].i2h.weight = self.convPredictor.layer_stack[i].i2h.weight 
+            self.convEncoder.layer_stack[i].i2h.bias = self.convPredictor.layer_stack[i].i2h.bias
+            self.convEncoder.layer_stack[i].h2h.weight = self.convPredictor.layer_stack[i].h2h.weight 
 
             if gate is True: 
                 for i in range(len(chids)): 
