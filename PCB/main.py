@@ -11,7 +11,8 @@ import torch.nn.functional as f
 from torch.utils.data import DataLoader, Dataset
 from torch.nn._functions.thnn import rnnFusedPointwise as fusedBackend 
 import numpy as np
- 
+from model import ConvEncDec 
+
 class PCB(Dataset):
     def __init__(self, data, mask):  # data: 9 by 20 by 1 by 64 by 64 
         self.input = data[:, :10] 
@@ -25,220 +26,6 @@ class PCB(Dataset):
 
     def __len__(self):
         return self.input.size(0) 
-
-class ConvLSTMCell(nn.Module): 
-    def __init__(self, cinp, chid, ksz): 
-        
-        super(ConvLSTMCell, self).__init__() 
-        
-        self.cinp = cinp
-        self.chid = chid 
-        self.ksz = ksz
-        pad = int((ksz-1)/2) 
-
-        self.i2h = nn.Conv2d(cinp, 4*chid, ksz, 1, pad, bias=True) 
-        self.h2h = nn.Conv2d(chid, 4*chid, ksz, 1, pad) 
-
-    def forward(self, input, hidden=None): 
-
-        bsz, _, height, width = input.size() 
-
-        if hidden is None: 
-            hidden = self.init_hidden(bsz, height, width) 
-
-        hx, cx = hidden
-
-        iGates = self.i2h(input)
-        hGates = self.h2h(hx) 
-
-        state = fusedBackend.LSTMFused.apply 
-        hy, cy = state(iGates, hGates, cx) 
-
-        return hy,cy 
-
-    def init_hidden(self, bsz, height, width): 
-        weight = next(self.parameters()).data 
-
-        return (weight.new(bsz, self.chid, height, width).zero_(), #.requires_grad_(), 
-                weight.new(bsz, self.chid, height, width).zero_())#.requires_grad_()) 
-
-class ConvEncoder(nn.Module): 
-    def __init__(self, cinp, chids, ksz, dropout=0.2, h_dropout=0.0):
-        super(ConvEncoder, self).__init__() 
-
-        self.cinps = [cinp] + chids # 1 128 64 64
-        self.chids = chids # 128 64 64 
-        self.nlayers = len(chids) # 3
-        self.ksz = ksz 
-        self.dropout = dropout
-        self.h_dropout = h_dropout 
-
-        pad = int((ksz-1)/2) 
-        
-        self.layer_stack = nn.ModuleList([
-            ConvLSTMCell(self.cinps[i], self.chids[i], ksz) 
-            for i in range(self.nlayers)]) 
-
-        self.top = nn.Conv2d(chids[-1], cinp, ksz, 1, pad, bias=True) 
-
-    def forward(self, input, hidden=None):
-
-        bsz, steps, cinp, height, width = input.size() 
-
-        if hidden==None: 
-            hidden = [layer.init_hidden(bsz, height, width) 
-                for layer in self.layer_stack] 
-    
-        if self.dropout>0 and self.training: 
-            mask = [input.new(bsz, cinp, height, width).bernoulli_(1-self.dropout).div(1-self.dropout)]
-            for i in range(len(hidden)):
-                mask.append(hidden[i][0].new(hidden[i][0].size()).bernoulli_(1-self.dropout).div(1-self.dropout)) 
-            self.mask = mask 
-        else: 
-            self.mask = None 
-
-        if self.h_dropout>0 and self.training:
-            mask = []
-            for i in range(len(hidden)):
-                mask.append(hidden[i][0].new(hidden[i][0].size()).bernoulli_(1-self.dropout).div(1-self.dropout)) 
-            self.h_mask = mask 
-        else:
-            self.h_mask = None 
-
-        for step in range(steps): 
-            next_hidden = [] 
-            
-            # mask all of input. 
-            x = input[:,step] 
-
-            if self.mask is not None: # training & dropout 
-                x = x*self.mask[0] 
-            
-            for i, layer in enumerate(self.layer_stack): 
-                
-                h,c = hidden[i]
-                
-                if self.h_mask is not None: 
-                    h = h*self.h_mask[i]         
-
-                x,c = layer(x, (h,c)) 
-                next_hidden.append((x,c)) 
-                
-                if self.mask is not None: 
-                    x = x*self.mask[i+1]
-            
-            hidden = next_hidden
-
-        return hidden 
-
-
-class ConvDecoder(nn.Module):
-    def __init__(self, cinp, chids, ksz, reverse=False, dropout=0.2, h_dropout=0.0): 
-     
-        super(ConvDecoder, self).__init__() 
-   
-        self.cinps = [cinp] + chids 
-        self.chids = chids 
-        self.nlayers = len(chids) 
-        self.ksz = ksz 
-        self.reverse = reverse 
-        self.dropout = dropout
-        self.h_dropout = h_dropout
-
-        pad = int((ksz-1)/2) 
-
-        self.layer_stack = nn.ModuleList([
-            ConvLSTMCell(self.cinps[i], self.chids[i], ksz) 
-            for i in range(self.nlayers)]) 
-
-        self.top = nn.Conv2d(chids[-1], cinp, ksz, 1, pad, bias=True) 
-
-    def forward(self, hidden, target): 
-
-        if target is None: # free running 
-            pass
-        else: # teacher forcing 
-            pass
-
-        bsz, steps, cinp, height, width = target.size()
-
-        if self.reverse:
-            timesteps = range(steps-1,0,-1) 
-        else:
-            timesteps = range(steps-1) 
-
-        if self.dropout>0 and self.training: 
-            mask = [input.new(bsz, cinp, height, width).bernoulli_(1-self.dropout).div(1-self.dropout)]
-            for i in range(len(hidden)):
-                mask.append(hidden[i][0].new(hidden[i][0].size()).bernoulli_(1-self.dropout).div(1-self.dropout)) 
-            self.mask = mask 
-        
-        else: 
-            self.mask = None 
-
-        if self.h_dropout>0 and self.training:
-            mask = []
-            for i in range(len(hidden)):
-                mask.append(hidden[i][0].new(hidden[i][0].size()).bernoulli_(1-self.dropout).div(1-self.dropout)) 
-            self.h_mask = mask 
-        else:
-            self.h_mask = None 
-
-
-        outputs = [self.top(hidden[-1][0])]
-
-        for step in timesteps: 
-            next_hidden = [] 
-            x = target[:, step]
-
-            # mask of target
-            if self.mask is not None: 
-                x = x*self.mask[0] 
-            
-            for i, layer in enumerate(self.layer_stack): 
-                
-                h, c = hidden[i] 
-
-                if self.h_mask is not None: 
-                    h =h*self.h_mask[i] 
-        
-                x,c = layer(x, (h,c)) 
-                next_hidden.append((x,c)) 
-                
-                if self.mask is not None: 
-                    x = x*self.mask[i+1] 
-            
-            hidden = next_hidden 
-            outputs.append(self.top(x)) 
-
-        if self.reverse:
-            outputs = torch.stack(outputs[::-1], 1) 
-        else:
-            outputs = torch.stack(outputs, 1) 
-           
-        return outputs
-    
-
-class ConvEncDec(nn.Module): 
-    def __init__(self, cinp, chids, ksz, dropout=0.2, h_dropout=0.0): 
-        super(ConvEncDec, self).__init__() 
-
-        self.dropout = dropout 
-        self.h_dropout = h_dropout
-
-        self.convEncoder = ConvEncoder(cinp, chids, ksz, dropout=dropout, h_dropout=h_dropout) 
-        self.convReconstructor= ConvDecoder(cinp, chids, ksz, reverse=True, dropout=dropout, h_dropout=h_dropout) 
-        self.convPredictor = ConvDecoder(cinp, chids, ksz, dropout=dropout, h_dropout=h_dropout) 
-
-    def forward(self, input, target, hidden=None):
-
-        hidden = self.convEncoder(input, hidden)
-        reconstructed = self.convReconstructor(hidden, input) 
-        predicted = self.convPredictor(hidden, target) 
-        output = torch.cat([reconstructed, predicted], 1) 
-
-        return output, hidden
-
     
 if __name__=='__main__': 
   
@@ -253,6 +40,7 @@ if __name__=='__main__':
     parser.add_argument('--h_dropout', type=float, default=0.1) 
     parser.add_argument('--train_folder', type=str, default='train') 
     parser.add_argument('--valid_folder', type=str, default='valid') 
+    parser.add_argument('--gate', action='store_true') 
 
     args = parser.parse_args() 
 
@@ -276,7 +64,7 @@ if __name__=='__main__':
         dataset.append(torch.cat([image[i], image[i+1]], 0)) #20 1 64 64
         bmasks.append(torch.cat([bmask[i], bmask[i+1]], 0)) 
 
-    dataset = torch.stack(dataset, 0) 
+    dataset = torch.stack(dataset, 0)
     bmasks = torch.stack(bmasks, 0).unsqueeze(2) 
 
 
@@ -292,7 +80,7 @@ if __name__=='__main__':
     train_loader = DataLoader(dataset=trainset, batch_size=1, shuffle=False) 
     valid_loader = DataLoader(dataset=validset, batch_size=1, shuffle=False) 
  
-    model = ConvEncDec(1, args.nhid, args.ksz, dropout=args.dropout, h_dropout=args.h_dropout).to('cuda')    
+    model = ConvEncDec(1, args.nhid, args.ksz, dropout=args.dropout, h_dropout=args.h_dropout, gate=args.gate).to('cuda')    
 
     criterion = nn.MSELoss() 
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-7) 
@@ -357,7 +145,8 @@ if __name__=='__main__':
             loss = criterion(outputs, targets) 
             valid_loss.append(loss.item()) 
 
-            print('%d/%d:%7.5f'%(i,100/5,sum(valid_loss)/len(valid_loss)))
+            if i==3: 
+                print('%s %d/%d:%7.5f'%(args.valid_folder, i,4,sum(valid_loss)/len(valid_loss)))
             
             if i==0: # 5 6 1 64 64
                 disp_outputs = outputs[0,:,0].detach().to('cpu') # 6 64 64 
