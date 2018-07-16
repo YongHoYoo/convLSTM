@@ -58,8 +58,11 @@ class ConvEncoder(nn.Module):
 
         if gate is True:
             self.attn = nn.ModuleList([ 
-                nn.Conv2d(self.chids[i], 1, ksz, 1, pad, bias=True) 
+#                nn.Linear(self.chids[i], 1) # spatial
+                nn.Linear(64*64, 1) # channel
+#                nn.Conv2d(self.chids[i], 1, ksz, 1, pad, bias=True) 
                 for i in range(self.nlayers)])
+
         else: 
             self.attn = None 
 
@@ -110,11 +113,32 @@ class ConvEncoder(nn.Module):
                 x,c = layer(x, (h,c)) 
                 
                 if self.attn is not None and step<steps-1: # don't apply the attn to last hidden state 
-                    attn = self.attn[i](x) 
-                    
+
+# channel   
+                    nc = x.size(1)
+                    xa = x.view(-1, 64*64)
+                    attn = nn.Sigmoid()(self.attn[i](xa)) # (bsz*c) by 1
+
+                    attn = attn.view(bsz, nc, 1, 1) 
                     attn_mask.append(attn) 
-                    a = nn.Sigmoid()(attn) 
-                    x = x*a.expand_as(x) 
+
+                    x = x*attn.expand_as(x) 
+# spatial
+#                    nc = x.size(1) 
+#                    xa = x.transpose(1,-1).contiguous().view(-1,nc) # bsz by 64 by 64 by 128 -> ~, 128
+#                    attn= nn.Sigmoid()(self.attn[i](xa)) # ~ by 128 -> 1 by 128 by 1
+#
+#                    attn = attn.view([bsz, 64, 64]).transpose(1,-1).unsqueeze(1) 
+#    
+#                    attn_mask.append(attn) 
+#                    
+#                    x = x*attn.expand_as(x)                    
+                    
+#                    attn = self.attn[i](x) 
+#                    attn = nn.Sigmoid()(attn) 
+#                    attn_mask.append(attn) # bc by 1 by 64 by 64
+#
+#                    x = x*attn.expand_as(x) 
 
                 next_hidden.append((x,c)) 
                 
@@ -151,8 +175,13 @@ class ConvDecoder(nn.Module):
 
         if gate is True:
             self.attn = nn.ModuleList([ 
-                nn.Conv2d(self.chids[i], 1, ksz, 1, pad, bias=True) 
+                nn.Linear(64*64, 1)
+#                nn.Linear(self.chids[i], 1) 
+#                nn.Conv2d(self.chids[i], 1, ksz, 1, pad, bias=True) 
                 for i in range(self.nlayers)])
+
+            # cinp, chid, ksz, stride, pad. 
+            
         else: 
             self.attn = None 
 
@@ -211,11 +240,37 @@ class ConvDecoder(nn.Module):
 
                 if self.attn is not None: 
                     if attn_masks is not None: 
-                        a = attn_masks[step-1][i]
-                        x = x*a.expand_as(x) 
+#                        a = attn_masks[step-1][i]
+#                        x = x*a.expand_as(x) 
+
+                        nc = x.size(1)
+                        xa = x.view(-1, 64*64)
+                        attn = nn.Sigmoid()(self.attn[i](xa)) # (bsz*c) by 1
+    
+                        attn = attn.view(bsz, nc, 1, 1) 
+                        x = x*attn.expand_as(x) 
+
                     else: 
-                        a = nn.Sigmoid()(self.attn[i](x)) 
-                        x = x*a.expand_as(x) 
+
+                        nc = x.size(1)
+                        xa = x.view(-1, 64*64)
+                        attn = nn.Softmax(dim=1)(self.attn[i](xa)) # (bsz*c) by 1
+    
+                        attn = attn.view(bsz, nc, 1, 1) 
+                        x = x*attn.expand_as(x) 
+    
+
+
+
+#                        nc = x.size(1) 
+#                        xa = x.transpose(1,-1).contiguous().view(-1,nc) # bsz by 64 by 64 by 128 -> ~, 128
+#                        attn= nn.Sigmoid()(self.attn[i](xa)) # ~ by 128 -> 1 by 128 by 1
+#                        attn = attn.view([bsz, 64, 64]).transpose(1,-1).unsqueeze(1) 
+#        
+#                        x = x*attn.expand_as(x)                    
+
+#                        a = nn.Sigmoid()(self.attn[i](x)) 
+#                        x = x*a.expand_as(x) 
 
                 next_hidden.append((x,c)) 
                 
@@ -243,8 +298,7 @@ class ConvEncDec(nn.Module):
         self.convEncoder = ConvEncoder(cinp, chids, ksz, dropout=dropout, h_dropout=h_dropout, gate=gate) 
         self.convReconstructor= ConvDecoder(cinp, chids, ksz, reverse=True, dropout=dropout, h_dropout=h_dropout, gate=gate) 
         self.convPredictor = ConvDecoder(cinp, chids, ksz, dropout=dropout, h_dropout=h_dropout, gate=gate) 
- 
-
+        
         # tying attention network
         for i in range(len(chids)):     
             self.convEncoder.layer_stack[i].i2h.weight = self.convPredictor.layer_stack[i].i2h.weight 
@@ -260,6 +314,7 @@ class ConvEncDec(nn.Module):
     def forward(self, input, target, hidden=None):
 
         hidden, attns = self.convEncoder(input, hidden)
+
         reconstructed = self.convReconstructor(hidden, input, attns) 
         predicted = self.convPredictor(hidden, target) 
         output = torch.cat([reconstructed, predicted], 1) 
