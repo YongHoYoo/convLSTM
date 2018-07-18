@@ -33,7 +33,7 @@ if __name__=='__main__':
 
     parser.add_argument('--bsz', type=int, default=5) 
     parser.add_argument('--epochs', type=int, default=100) 
-    parser.add_argument('--lr', type=float, default=1e-3) 
+    parser.add_argument('--lr', type=float, default=1e-4) 
     parser.add_argument('--ksz', type=int, default=5) 
     parser.add_argument('--nhid', type=list, default=[128,64,64]) 
     parser.add_argument('--dropout', type=float, default=0.1) 
@@ -83,7 +83,7 @@ if __name__=='__main__':
     model = ConvEncDec(1, args.nhid, args.ksz, dropout=args.dropout, h_dropout=args.h_dropout, gate=args.gate).to('cuda')    
 
     criterion = nn.MSELoss() 
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5) 
+    optimizer = optim.RMSprop(model.parameters(), lr=args.lr, weight_decay=1e-6)
 
     all_valid_loss = [] 
 
@@ -93,7 +93,8 @@ if __name__=='__main__':
         hidden = None 
         print('*** epoch %d ***'%epoch) 
         print('----------------') 
-        
+ 
+        train_loss = []        
         for i, data in enumerate(train_loader): 
 
             optimizer.zero_grad() 
@@ -104,10 +105,13 @@ if __name__=='__main__':
             masks = torch.cat([imask, tmask], 1)    
 
             outputs, hidden = model(input, target, hidden) 
-
-            loss = criterion(outputs, targets) 
+            outputs = outputs*masks
+            
+            loss = criterion(1000*outputs, targets) 
             loss.backward() 
             optimizer.step() 
+
+            train_loss.append(loss.item()) 
 
             new_hidden = [] 
             for j in range(len(hidden)):
@@ -126,7 +130,7 @@ if __name__=='__main__':
                 torchvision.utils.save_image(torch.cat([disp_targets, disp_outputs], 0), save_filename) 
 
 
-        optimizer.param_groups[0]['lr']*=0.9
+        optimizer.param_groups[0]['lr']*=0.95
 
         model.eval() 
         
@@ -137,7 +141,7 @@ if __name__=='__main__':
             targets = torch.cat([input, target], 1) 
             masks = torch.cat([imask, tmask], 1) 
             outputs, hidden = model(input, target, hidden) 
-            
+#            outputs = outputs*masks
             loss = criterion(outputs, targets) 
             valid_loss.append(loss.item()) 
             
@@ -150,7 +154,8 @@ if __name__=='__main__':
                 save_filename = str(valid_folder.joinpath('image%d.png'%epoch)) 
                 torchvision.utils.save_image(torch.cat([disp_targets, disp_outputs], 0), save_filename) 
 
-        print('%s, %7.5f'%(args.valid_folder, sum(valid_loss)/len(valid_loss)))
+        all_valid_loss.append(sum(valid_loss)/len(valid_loss)) 
+        pickle.dump(all_valid_loss, open(str(valid_folder.joinpath('valid.pkl')), 'wb'))
 
-
+        print('%s, %7.5f'%(args.valid_folder, sum(train_loss)/len(train_loss)))
 
