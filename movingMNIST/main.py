@@ -29,13 +29,13 @@ if __name__=='__main__':
   
     parser = argparse.ArgumentParser(description='Argument Parser') 
 
-    parser.add_argument('--bsz', type=int, default=5) 
+    parser.add_argument('--bsz', type=int, default=1)
     parser.add_argument('--epochs', type=int, default=100) 
     parser.add_argument('--lr', type=float, default=1e-3) 
     parser.add_argument('--ksz', type=int, default=5) 
     parser.add_argument('--nhid', type=list, default=[128,64,64]) 
     parser.add_argument('--dropout', type=float, default=0.2) 
-    parser.add_argument('--h_dropout', type=float, default=0.0) 
+    parser.add_argument('--h_dropout', type=float, default=0.2) 
     parser.add_argument('--save_folder', type=str, default='image') 
     parser.add_argument('--gate', action='store_true') 
 
@@ -76,19 +76,20 @@ if __name__=='__main__':
         for i, data in enumerate(train_loader):
             start_time = time.time() 
     
-            optimizer.zero_grad() 
 
-            input, target = data
-
+            input, target = data 
             targets = torch.cat([input, target], 1) 
 
-            outputs, hidden = model(input, target) 
-            loss = criterion(outputs, targets) 
+            for j in range(2): 
+                optimizer.zero_grad() 
+    
+                outputs, hidden = model(input, target) 
+                loss = criterion(outputs, targets) 
+    
+                loss.backward() 
+                optimizer.step() 
 
-            loss.backward() 
-            optimizer.step() 
-
-        optimizer.param_groups[0]['lr']*=0.9 
+                input = (input*0.7+outputs[:,:10]*0.3).detach() 
 
         model.eval() 
         valid_loss = [] 
@@ -113,5 +114,8 @@ if __name__=='__main__':
                 save_filename = str(save_folder.joinpath('image%d.png'%epoch)) 
                 torchvision.utils.save_image(torch.cat([disp_targets, disp_outputs], 0), save_filename) 
 
+
         all_valid_loss.append(sum(valid_loss)/len(valid_loss))
         pickle.dump(all_valid_loss, open(str(save_folder.joinpath('valid.pkl')), 'wb'))
+
+        optimizer.param_groups[0]['lr']*=0.9 

@@ -1,7 +1,30 @@
 import torch
 import torch.nn as nn 
 import torch.nn.functional as f
+from torch.nn.parameter import Parameter 
 from torch.nn._functions.thnn import rnnFusedPointwise as fusedBackend 
+
+class spatialAttention(nn.Module):
+    def __init__(self, cinp): 
+        super(spatialAttention, self).__init__() 
+        self.attn = nn.Conv2d(cinp, 1, 1, 1, bias=True) 
+
+    def forward(self,input): 
+        return nn.Sigmoid()(self.attn(input))
+
+class channelAttention(nn.Module): 
+    def __init__(self, cinp): 
+        super(channelAttention, self).__init__() 
+        self.attn = nn.Conv1d(cinp, 1, 1, bias=True)
+        self.cinp = cinp  
+        
+    def forward(self, input): 
+        bsz = input.size(0) 
+        input_t = input.view(bsz, -1, self.cinp).transpose(-2,-1) 
+        attn_t = nn.Sigmoid()(self.attn(input_t))
+        attn = attn_t.transpose(-2,-1).unsqueeze(3) 
+       
+        return attn 
 
 class ConvLSTMCell(nn.Module): 
     def __init__(self, cinp, chid, ksz): 
@@ -16,6 +39,8 @@ class ConvLSTMCell(nn.Module):
         self.i2h = nn.Conv2d(cinp, 4*chid, ksz, 1, pad, bias=True) 
         self.h2h = nn.Conv2d(chid, 4*chid, ksz, 1, pad) 
 
+        self.i2h.bias[3*chid:].data.fill_(1) 
+
     def forward(self, input, hidden=None): 
 
         bsz, _, height, width = input.size() 
@@ -26,26 +51,27 @@ class ConvLSTMCell(nn.Module):
         hx, cx = hidden
 
         iGates = self.i2h(input)
-        hGates = self.h2h(hx) 
+#        hGates = self.h2h(hx) 
+        hGates = iGates.clone() 
 
         state = fusedBackend.LSTMFused.apply 
-        hy, cy = state(iGates, hGates, cx) 
+        hy, cy = state(iGates, iGates, cx) 
 
         return hy,cy 
 
     def init_hidden(self, bsz, height, width): 
         weight = next(self.parameters()).data 
 
-        return (weight.new(bsz, self.chid, height, width).zero_(), #.requires_grad_(), 
-                weight.new(bsz, self.chid, height, width).zero_())#.requires_grad_()) 
+        return (weight.new(bsz, self.chid, height, width).zero_().requires_grad_(), 
+                weight.new(bsz, self.chid, height, width).zero_().requires_grad_()) 
 
 class ConvEncoder(nn.Module): 
     def __init__(self, cinp, chids, ksz, dropout=0.2, h_dropout=0.0, gate=False):
         super(ConvEncoder, self).__init__() 
 
-        self.cinps = [cinp] + chids # 1 128 64 64
-        self.chids = chids # 128 64 64 
-        self.nlayers = len(chids) # 3
+        self.cinps = [cinp] + chids 
+        self.chids = chids 
+        self.nlayers = len(chids)
         self.ksz = ksz 
         self.dropout = dropout
         self.h_dropout = h_dropout 
@@ -58,7 +84,8 @@ class ConvEncoder(nn.Module):
 
         if gate is True:
             self.attn = nn.ModuleList([ 
-                nn.Conv2d(self.chids[i], 1, ksz, 1, pad, bias=True) 
+#                spatialAttention(self.chids[1]) 
+                channelAttention(64*64) 
                 for i in range(self.nlayers)])
 
         else: 
@@ -112,12 +139,10 @@ class ConvEncoder(nn.Module):
                 
                 if self.attn is not None and step<steps-1: # don't apply the attn to last hidden state 
 
-                    
-                    attn = self.attn[i](x) 
-                    attn = nn.Sigmoid()(attn) 
-                    attn_mask.append(attn) 
+                    a = self.attn[i](x) 
+                    attn_mask.append(a) # bc by 1 by 64 by 64
 
-                    x = x*attn.expand_as(x) 
+                    x = x*a.expand_as(x) 
 
                 next_hidden.append((x,c)) 
                 
@@ -153,14 +178,17 @@ class ConvDecoder(nn.Module):
             for i in range(self.nlayers)]) 
 
         if gate is True:
-            self.attn = nn.ModuleList([ 
-                nn.Conv2d(self.chids[i], 1, ksz, 1, pad, bias=True) 
+            self.attn = nn.ModuleList([
+#                spatialAttention(self.chids[i]) 
+                channelAttention(64*64) 
                 for i in range(self.nlayers)])
+
+            # cinp, chid, ksz, stride, pad. 
             
         else: 
             self.attn = None 
 
-        self.top = nn.Conv2d(chids[-1], cinp, ksz, 1, pad, bias=True) 
+        self.top = nn.Conv2d(chids[-1], cinp, ksz, 1, pad, bias=True)
 
     def forward(self, hidden, target, attn_masks=None): 
 
@@ -217,9 +245,8 @@ class ConvDecoder(nn.Module):
                     if attn_masks is not None: 
                         a = attn_masks[step-1][i]
                         x = x*a.expand_as(x) 
-
                     else: 
-                        a = nn.Sigmoid()(self.attn[i](x)) 
+                        a = self.attn[i](x)
                         x = x*a.expand_as(x) 
 
                 next_hidden.append((x,c)) 
@@ -248,7 +275,7 @@ class ConvEncDec(nn.Module):
         self.convEncoder = ConvEncoder(cinp, chids, ksz, dropout=dropout, h_dropout=h_dropout, gate=gate) 
         self.convReconstructor= ConvDecoder(cinp, chids, ksz, reverse=True, dropout=dropout, h_dropout=h_dropout, gate=gate) 
         self.convPredictor = ConvDecoder(cinp, chids, ksz, dropout=dropout, h_dropout=h_dropout, gate=gate) 
-        
+
         # tying attention network
         for i in range(len(chids)):     
             self.convEncoder.layer_stack[i].i2h.weight = self.convPredictor.layer_stack[i].i2h.weight 
@@ -257,9 +284,9 @@ class ConvEncDec(nn.Module):
 
             if gate is True: 
                 for i in range(len(chids)): 
-                    self.convEncoder.attn[i].weight = self.convPredictor.attn[i].weight 
-                    self.convEncoder.attn[i].bias = self.convPredictor.attn[i].bias
-
+                    self.convEncoder.attn[i].attn.weight = self.convPredictor.attn[i].attn.weight 
+                    self.convEncoder.attn[i].attn.bias = self.convPredictor.attn[i].attn.bias
+        
 
     def forward(self, input, target, hidden=None):
 

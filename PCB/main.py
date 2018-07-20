@@ -15,11 +15,11 @@ from model import ConvEncDec
 
 class PCB(Dataset):
     def __init__(self, data, mask):  # data: 9 by 20 by 1 by 64 by 64 
-        self.input = data[:, :10] 
-        self.output = data[:, 10:20] 
+        self.input = data[:, :10:2]
+        self.output = data[:, 10:20:2] 
 
-        self.imask = mask[:, :10] 
-        self.omask = mask[:, 10:20] 
+        self.imask = mask[:, :10:2] 
+        self.omask = mask[:, 10:20:2] 
 
     def __getitem__(self, idx): 
         return self.input[idx].to('cuda'), self.output[idx].to('cuda'), self.imask[idx].to('cuda'), self.imask[idx].to('cuda') 
@@ -33,11 +33,11 @@ if __name__=='__main__':
 
     parser.add_argument('--bsz', type=int, default=5) 
     parser.add_argument('--epochs', type=int, default=100) 
-    parser.add_argument('--lr', type=float, default=1e-4) 
-    parser.add_argument('--ksz', type=int, default=5) 
+    parser.add_argument('--lr', type=float, default=1e-3) 
+    parser.add_argument('--ksz', type=int, default=1) 
     parser.add_argument('--nhid', type=list, default=[128,64,64]) 
-    parser.add_argument('--dropout', type=float, default=0.1) 
-    parser.add_argument('--h_dropout', type=float, default=0.1) 
+    parser.add_argument('--dropout', type=float, default=0.0) 
+    parser.add_argument('--h_dropout', type=float, default=0.0) 
     parser.add_argument('--train_folder', type=str, default='train') 
     parser.add_argument('--valid_folder', type=str, default='valid') 
     parser.add_argument('--gate', action='store_true') 
@@ -83,7 +83,7 @@ if __name__=='__main__':
     model = ConvEncDec(1, args.nhid, args.ksz, dropout=args.dropout, h_dropout=args.h_dropout, gate=args.gate).to('cuda')    
 
     criterion = nn.MSELoss() 
-    optimizer = optim.RMSprop(model.parameters(), lr=args.lr, weight_decay=1e-6)
+    optimizer = optim.RMSprop(model.parameters(), lr=args.lr, weight_decay=1e-5)
 
     all_valid_loss = [] 
 
@@ -97,28 +97,35 @@ if __name__=='__main__':
         train_loss = []        
         for i, data in enumerate(train_loader): 
 
-            optimizer.zero_grad() 
-
             input, target, imask, tmask = data 
-                       
             targets = torch.cat([input, target], 1) 
-            masks = torch.cat([imask, tmask], 1)    
 
-            outputs, hidden = model(input, target, hidden) 
-            outputs = outputs*masks
-            
-            loss = criterion(1000*outputs, targets) 
-            loss.backward() 
-            optimizer.step() 
+            prev_hidden = hidden 
 
-            train_loss.append(loss.item()) 
+            for j in range(5): 
 
-            new_hidden = [] 
-            for j in range(len(hidden)):
-                h,c = hidden[j][0].detach(), hidden[j][1].detach() 
-                new_hidden.append((h,c)) 
+                optimizer.zero_grad() 
+    
+                targets = targets.detach() 
+                masks = torch.cat([imask, tmask], 1)    
+    
+                outputs, hidden = model(input, target, prev_hidden) 
+                outputs = outputs*masks
+                
+                loss = criterion(outputs, targets) 
+                loss.backward() 
+                optimizer.step() 
 
-            hidden = new_hidden 
+                input = outputs[:,:5].detach() 
+
+#            train_loss.append(loss.item()) 
+
+                new_hidden = [] 
+                for j in range(len(hidden)):
+                    h,c = hidden[j][0].detach(), hidden[j][1].detach() 
+                    new_hidden.append((h,c)) 
+
+                hidden = new_hidden 
 
             if i==0: # 5 6 1 64 64
                 disp_outputs = outputs[0,:,0].detach().to('cpu') # 6 64 64 
@@ -130,7 +137,6 @@ if __name__=='__main__':
                 torchvision.utils.save_image(torch.cat([disp_targets, disp_outputs], 0), save_filename) 
 
 
-        optimizer.param_groups[0]['lr']*=0.95
 
         model.eval() 
         
@@ -141,7 +147,7 @@ if __name__=='__main__':
             targets = torch.cat([input, target], 1) 
             masks = torch.cat([imask, tmask], 1) 
             outputs, hidden = model(input, target, hidden) 
-#            outputs = outputs*masks
+            outputs = outputs*masks
             loss = criterion(outputs, targets) 
             valid_loss.append(loss.item()) 
             
@@ -156,6 +162,7 @@ if __name__=='__main__':
 
         all_valid_loss.append(sum(valid_loss)/len(valid_loss)) 
         pickle.dump(all_valid_loss, open(str(valid_folder.joinpath('valid.pkl')), 'wb'))
+        print('%s, %7.5f'%(args.valid_folder, sum(valid_loss)/len(valid_loss)))
 
-        print('%s, %7.5f'%(args.valid_folder, sum(train_loss)/len(train_loss)))
-
+#        print('%s, %7.5f, %7.5f'%(args.valid_folder, sum(train_loss)/len(train_loss), sum(valid_loss)/len(valid_loss)))
+        optimizer.param_groups[0]['lr']*=0.95
